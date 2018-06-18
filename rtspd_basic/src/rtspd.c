@@ -173,6 +173,9 @@ static char *rtsp_enc_type_str[] = {
     "MJPEG"
 };
 
+void *sub_enc_object;  // create encoder object (scaler)
+void *sub_bindfd;      // create encoder object (scaler) bind
+
 struct MyConfig
 {
     int framerate;
@@ -180,6 +183,7 @@ struct MyConfig
     int width;
     int bitrate;
     int bitrateMode;
+    int encoderType;
 } myConfig;
 
 static char getch(void)
@@ -839,13 +843,17 @@ void gm_enc_init(int cap_ch, int cap_path, int rec_track, int enc_type, int mode
         memcpy(&param->cap.cap_attr, &cap_attr, sizeof(gm_cap_attr_t));
         memcpy(&param->cap.dnr_attr, &dnr_attr, sizeof(gm_3dnr_attr_t));
     }
+
+
+
+
     
     param->enc[rec_track].obj = gm_new_obj(GM_ENCODER_OBJECT); // new encoder object 
     param->enc[rec_track].enc_type = enc_type;
     switch (enc_type) {
         case ENC_TYPE_H264:
-            h264e_attr.dim.width = width;
-            h264e_attr.dim.height = height;
+            h264e_attr.dim.width = main_w;
+            h264e_attr.dim.height = main_h;
             h264e_attr.frame_info.framerate = framerate;
             h264e_attr.ratectl.mode = mode;
             h264e_attr.ratectl.gop = 60;
@@ -860,8 +868,8 @@ void gm_enc_init(int cap_ch, int cap_path, int rec_track, int enc_type, int mode
             memcpy(&param->enc[rec_track].codec.h264e_attr, &h264e_attr, sizeof(gm_h264e_attr_t));
             break;
         case ENC_TYPE_MPEG4:
-            mpeg4e_attr.dim.width = width;
-            mpeg4e_attr.dim.height = height;
+            mpeg4e_attr.dim.width = main_w;
+            mpeg4e_attr.dim.height = main_h;
             mpeg4e_attr.frame_info.framerate = framerate;
             mpeg4e_attr.ratectl.mode = mode;
             mpeg4e_attr.ratectl.gop = 60;
@@ -871,8 +879,8 @@ void gm_enc_init(int cap_ch, int cap_path, int rec_track, int enc_type, int mode
             memcpy(&param->enc[rec_track].codec.mpeg4e_attr, &mpeg4e_attr, sizeof(gm_mpeg4e_attr_t));
             break;
         case ENC_TYPE_MJPEG:
-            mjpege_attr.dim.width = width;
-            mjpege_attr.dim.height = height;
+            mjpege_attr.dim.width = main_w;
+            mjpege_attr.dim.height = main_h;
             mjpege_attr.frame_info.framerate = framerate;
             mjpege_attr.quality = 30;
             gm_set_attr(param->enc[rec_track].obj, &mjpege_attr);
@@ -884,6 +892,18 @@ void gm_enc_init(int cap_ch, int cap_path, int rec_track, int enc_type, int mode
     }
     // bind channel recording 
     param->bindfd[rec_track] = gm_bind(enc_groupfd, param->cap.obj, param->enc[rec_track].obj);
+    
+     // Requires Scaler Encoder (only for H264)
+    if (enc_type == ENC_TYPE_H264 && (width<1920 || height < 1080))
+    {
+        h264e_attr.ratectl.bitrate = bitrate;  // 
+        h264e_attr.frame_info.framerate = framerate;
+        h264e_attr.dim.width = width;
+        h264e_attr.dim.height = height;
+        gm_set_attr(sub_enc_object, &h264e_attr);
+        sub_bindfd = gm_bind(enc_groupfd, param->cap.obj, sub_enc_object);
+    }   
+
     rtspd_avail_ch++;
 }
 
@@ -1001,9 +1021,11 @@ void gm_graph_init()
     enc_groupfd = gm_new_groupfd();
     chipid = gm_get_chipinfo();
     chipid = (chipid >> 16) & 0x0000ffff;
-       	    
-    gm_enc_init(0, 0, 0, ENC_TYPE_H264, myConfig.bitrateMode, myConfig.framerate, myConfig.bitrate,
+     
+    gm_enc_init(0, 0, 0, myConfig.encoderType, myConfig.bitrateMode, myConfig.framerate, myConfig.bitrate,
     	            myConfig.width, myConfig.height);
+
+    
     	    
     gm_apply(enc_groupfd); // active setting 
 }
@@ -1083,12 +1105,12 @@ void *encode_thread(void *ptr)
             break;
 
         if (rtspd_set_event) {
-            usleep(1000);//sleep(1);
+            usleep(100000);//sleep(1);
             continue;
         }
 
         if (set_poll_event() < 0) {
-            usleep(1000);//sleep(1);
+            usleep(100000);//sleep(1);
             continue;
         }
         gettimeofday(&cur, NULL);
@@ -1377,6 +1399,7 @@ int main(int argc, char *argv[])
     myConfig.width = 1920;
     myConfig.height = 1080;
     myConfig.bitrateMode = GM_CBR;
+    myConfig.encoderType=ENC_TYPE_H264;
 
 	rtspd_set_1ch = 0;
     if (argc > 1) {
@@ -1400,7 +1423,13 @@ int main(int argc, char *argv[])
                         break; 
                     case 'm':
                         myConfig.bitrateMode= atoi(&argv[i][2]);
-                        break; 
+                        break;
+                    case 'j':
+                        myConfig.encoderType=ENC_TYPE_MJPEG;
+                        break;
+                    case '4':
+                        myConfig.encoderType=ENC_TYPE_MPEG4;
+                        break;
                     default:
                         printf("argv error:%s\n", argv[i]);
                         return 1;
@@ -1415,9 +1444,8 @@ int main(int argc, char *argv[])
     printf("* width :%d\n", myConfig.width);
     printf("* height :%d\n", myConfig.height);
     printf("* bitrateMode :%d\n", myConfig.bitrateMode);
+    printf("* Encoder :%s\n", myConfig.encoderType==ENC_TYPE_H264?"H264":myConfig.encoderType==ENC_TYPE_MJPEG?"MJPEG":"MPEG4");
 
-
-	
     
     gm_graph_init();
     for (cap_ch = 0; cap_ch < 1; cap_ch++) {
